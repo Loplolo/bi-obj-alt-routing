@@ -3,6 +3,18 @@
 #include <string>
 #include <vector>
 
+// Helper functions for CSR graph
+template <typename GraphType>
+inline uint32_t edge_begin(const GraphType &g, uint32_t u) { return g.offset[u]; }
+template <typename GraphType>
+inline uint32_t edge_end(const GraphType &g, uint32_t u) { return g.offset[u + 1]; }
+template <typename GraphType>
+inline uint32_t edge_target(const GraphType &g, uint32_t e) { return g.target[e]; }
+template <typename GraphType>
+inline int32_t edge_weight(const GraphType &g, uint32_t e, int metric) {
+    return (metric == 1) ? g.distance[e] : g.travel_time[e];
+}
+
 struct Graph {
   struct Coordinate {
     int32_t x, y;

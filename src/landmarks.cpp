@@ -1,70 +1,71 @@
 #pragma once
 #include "graph_parse.hpp"
+#include "landmarks.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <mutex>
 #include <numeric>
 #include <queue>
 #include <random>
 #include <string>
 #include <vector>
+#include <future>
 
-static constexpr int32_t INF = std::numeric_limits<int32_t>::max() / 2;
+inline int get_bucket(int32_t val, int32_t last) {
+    if (val == last) return 0;
+    uint32_t diff = static_cast<uint32_t>(val) ^ static_cast<uint32_t>(last);
+    return 32 - __builtin_clz(diff);
+}
 
-enum class LandmarkPolicy {
-    Random,
-    Farthest,
-    OptimizedFarthest,
-    Avoid,
-    MaxCover,
-};
-
-struct LandmarkTable {
-    uint32_t num_landmarks = 0;
-    uint32_t num_nodes     = 0;
-    std::vector<uint32_t> nodes;
-    std::vector<int32_t>  dist_from; // dist_from[lm * num_nodes + v] = dist(lm, v)
-    std::vector<int32_t>  dist_to; // dist_to  [lm * num_nodes + v] = dist(v, lm)
-
-    int32_t from(uint32_t lm, uint32_t v) const { return dist_from[lm * num_nodes + v]; }
-    int32_t to  (uint32_t lm, uint32_t v) const { return dist_to  [lm * num_nodes + v]; }
-    int32_t lower_bound(uint32_t u, uint32_t v) const {
-        int32_t h = 0;
-        for (uint32_t l = 0; l < num_landmarks; ++l)
-            h = std::max({h, from(l, u) - from(l, v),
-                             to(l, v)   - to(l, u)});
-        return h;
-    }
-};
-
-// Dijkstra implemented with binary heaps.
-// Returns the SPT parent array alongside distances when `parents` is non-null.
-// TODO: buckets or radix heaps for better performance
 template <typename GraphType>
 void dijkstra(const GraphType &g, uint32_t source, int metric,
               int32_t *dists, uint32_t *parents = nullptr) {
-    using Label = std::pair<int32_t, uint32_t>;
-    std::priority_queue<Label, std::vector<Label>, std::greater<Label>> pq;
-
     std::fill_n(dists, g.num_nodes, INF);
     if (parents) std::fill_n(parents, g.num_nodes, UINT32_MAX);
     dists[source] = 0;
-    pq.push({0, source});
 
-    while (!pq.empty()) {
-        auto [d, u] = pq.top();
-        pq.pop();
+    std::vector<std::pair<int32_t, uint32_t>> buckets[33];
+    int32_t bucket_min[33];
+    std::fill_n(bucket_min, 33, INF);
+
+    int32_t prev = 0;
+    int size = 0;
+
+    buckets[0].push_back({0, source});
+    size++;
+
+    while (size > 0) {
+        if (buckets[0].empty()) {
+            int i = 1;
+            while (buckets[i].empty()) i++;
+            prev = bucket_min[i];
+            for (const auto &p : buckets[i]) {
+                int new_idx = get_bucket(p.first, prev);
+                buckets[new_idx].push_back(p);
+            }
+            buckets[i].clear();
+            bucket_min[i] = INF;
+        }
+
+        auto [d, u] = buckets[0].back();
+        buckets[0].pop_back();
+        size--;
+
         if (d > dists[u]) continue;
 
-        for (uint32_t i = g.offset[u]; i < g.offset[u + 1]; ++i) {
-            uint32_t v      = g.target[i];
-            int32_t  weight = (metric == 1) ? g.distance[i] : g.travel_time[i];
+        for (uint32_t i = edge_begin(g, u); i < edge_end(g, u); ++i) {
+            uint32_t v = edge_target(g, i);
+            int32_t weight = edge_weight(g, i, metric);
             if (dists[u] + weight < dists[v]) {
                 dists[v] = dists[u] + weight;
                 if (parents) parents[v] = u;
-                pq.push({dists[v], v});
+                int idx = get_bucket(dists[v], prev);
+                buckets[idx].push_back({dists[v], v});
+                bucket_min[idx] = std::min(bucket_min[idx], dists[v]);
+                size++;
             }
         }
     }
@@ -76,16 +77,13 @@ uint32_t next_landmark_random(std::mt19937 &gen, uint32_t num_nodes) {
 
 uint32_t next_landmark_farthest(const LandmarkTable &lm) {
     uint32_t best = UINT32_MAX;
-    int32_t  best_val = -1;
+    int32_t best_val = -1;
     for (uint32_t v = 0; v < lm.num_nodes; ++v) {
         int32_t min_dist = INF;
         for (uint32_t l = 0; l < lm.num_landmarks; ++l)
             min_dist = std::min(min_dist, lm.to(l, v));
-        if (min_dist == INF) continue; // unreachable
-        if (min_dist > best_val) {
-           best_val = min_dist; 
-           best = v; 
-          }
+        if (min_dist == INF) continue;
+        if (min_dist > best_val) { best_val = min_dist; best = v; }
     }
     return best;
 }
@@ -93,11 +91,10 @@ uint32_t next_landmark_farthest(const LandmarkTable &lm) {
 template <typename GraphType>
 uint32_t next_landmark_avoid(const GraphType &g, const LandmarkTable &lm,
                              int metric, std::mt19937 &gen,
-                             std::vector<int32_t>  &dists,
+                             std::vector<int32_t> &dists,
                              std::vector<uint32_t> &parents) {
     const uint32_t n = g.num_nodes;
-    
-    // Randomly select root weighted by distance from existing landmarks
+
     uint32_t root;
     if (lm.num_landmarks == 0) {
         root = next_landmark_random(gen, n);
@@ -120,24 +117,18 @@ uint32_t next_landmark_avoid(const GraphType &g, const LandmarkTable &lm,
         if (parents[v] != UINT32_MAX && parents[v] != v)
             children[parents[v]].push_back(v);
 
-    // dist(r,v) - lb(r,v)
     std::vector<int32_t> weight(n, 0);
     for (uint32_t v = 0; v < n; ++v) {
         if (dists[v] >= INF) continue;
         weight[v] = dists[v] - lm.lower_bound(root, v);
     }
 
-    // if subtree contains a landmark then s(v) = 0  
-    // else s(v) = sum of weights in subtree.
-    // contains (or is) a landmark when dist(l, v) == 0 for some l
     std::vector<int64_t> size(n, 0);
     std::vector<bool> has_lm(n, false);
 
-    // landmark nodes have s(v) = 0
     for (uint32_t l = 0; l < lm.num_landmarks; ++l)
         has_lm[lm.nodes[l]] = true;
 
-    // BFS order traversal
     std::vector<uint32_t> order;
     order.reserve(n);
     order.push_back(root);
@@ -145,40 +136,33 @@ uint32_t next_landmark_avoid(const GraphType &g, const LandmarkTable &lm,
         for (uint32_t c : children[order[i]])
             order.push_back(c);
 
-    // reverse read for post-order
-    // assign s(v) and has_lm(v) bottom up
-    // since if v has a landmark in its subtree 
-    // then it can't be the next landmark, so s(v) = 0;
     for (int32_t i = static_cast<int32_t>(order.size()) - 1; i >= 0; --i) {
         uint32_t v = order[i];
         if (has_lm[v]) { size[v] = 0; continue; }
         size[v] = weight[v];
         for (uint32_t c : children[v]) {
             has_lm[v] = has_lm[v] || has_lm[c];
-            size[v]  += size[c];
+            size[v] += size[c];
         }
         if (has_lm[v]) size[v] = 0;
     }
 
-    // find maximum size node w in T_r
     uint32_t w = root;
-    int64_t  best_size = -1;
+    int64_t best_size = -1;
     for (uint32_t v : order)
         if (size[v] > best_size) { best_size = size[v]; w = v; }
 
-    // traverse down until leaf choosing child with maximum size
     uint32_t cur = w;
     while (!children[cur].empty()) {
         uint32_t next = *std::max_element(
             children[cur].begin(), children[cur].end(),
-            [&](uint32_t a, uint32_t b){ return size[a] < size[b]; });
-        if (size[next] == 0) break; // leaf found
+            [&](uint32_t a, uint32_t b) { return size[a] < size[b]; });
+        if (size[next] == 0) break;
         cur = next;
     }
     return cur;
 }
 
-// select the farthest node for optimized_farthest's candidate evaluation
 int32_t farthest_score(const LandmarkTable &lm) {
     int32_t score = -1;
     for (uint32_t v = 0; v < lm.num_nodes; ++v) {
@@ -190,22 +174,20 @@ int32_t farthest_score(const LandmarkTable &lm) {
     return score;
 }
 
-// cost(S) is the number of arcs for which c^L(u,v) > 0 for all L in S
-// Arc (u, v) is covered by L if c(u, v) - max_L(from(L, v) - from(L, u), to(L, u) - to(L, v)) <= 0
 uint32_t uncovered_arcs(const Graph &g, const LandmarkTable &landmarks,
                         const std::vector<uint32_t> &slots, int metric) {
     uint32_t count = 0;
     for (uint32_t u = 0; u < g.num_nodes; ++u)
-        for (uint32_t e = g.offset[u]; e < g.offset[u + 1]; ++e) {
-            uint32_t v = g.target[e];
-            int32_t  c = (metric == 1) ? g.distance[e] : g.travel_time[e];
+        for (uint32_t e = edge_begin(g, u); e < edge_end(g, u); ++e) {
+            uint32_t v = edge_target(g, e);
+            int32_t c = edge_weight(g, e, metric);
             bool covered = false;
             for (uint32_t l : slots)
                 if (c - landmarks.from(l, v) + landmarks.from(l, u) <= 0 ||
-                    c - landmarks.to(l, u)   + landmarks.to(l, v)   <= 0) { 
-                      covered = true;
-                      break; 
-                      }
+                    c - landmarks.to(l, u) + landmarks.to(l, v) <= 0) {
+                    covered = true;
+                    break;
+                }
             if (!covered) ++count;
         }
     return count;
@@ -217,15 +199,15 @@ LandmarkTable build_landmarks(const Graph &g, const ReverseGraph &rg,
                               uint32_t seed = 0) {
     LandmarkTable lm;
     lm.num_nodes = g.num_nodes;
-    lm.nodes    .resize(num_lm);
+    lm.nodes.resize(num_lm);
     lm.dist_from.resize(num_lm * g.num_nodes);
-    lm.dist_to  .resize(num_lm * g.num_nodes);
+    lm.dist_to.resize(num_lm * g.num_nodes);
 
     std::mt19937 gen(seed);
-    std::vector<int32_t>  buf(g.num_nodes);
-    std::vector<uint32_t> parents(g.num_nodes); // for avoid 
+    std::vector<int32_t> buf(g.num_nodes);
+    std::vector<uint32_t> parents(g.num_nodes);
 
-    if (policy == LandmarkPolicy::Random   || policy == LandmarkPolicy::Farthest ||
+    if (policy == LandmarkPolicy::Random || policy == LandmarkPolicy::Farthest ||
         policy == LandmarkPolicy::Avoid) {
 
         for (uint32_t i = 0; i < num_lm; ++i) {
@@ -236,22 +218,28 @@ LandmarkTable build_landmarks(const Graph &g, const ReverseGraph &rg,
                 node = next_landmark_farthest(lm);
             else
                 node = next_landmark_avoid(g, lm, metric, gen, buf, parents);
+
             lm.nodes[i] = node;
-            dijkstra(g,  node, metric, lm.dist_from.data() + i * g.num_nodes);
-            dijkstra(rg, node, metric, lm.dist_to  .data() + i * g.num_nodes);
+
+            int32_t *from_ptr = lm.dist_from.data() + i * g.num_nodes;
+            int32_t *to_ptr = lm.dist_to.data() + i * g.num_nodes;
+            auto fwd = std::async(std::launch::async,
+                [&g, node, metric, from_ptr] { dijkstra(g, node, metric, from_ptr); });
+            dijkstra(rg, node, metric, to_ptr);
+            fwd.wait();
+
             lm.num_landmarks = i + 1;
         }
         return lm;
     }
 
-    // repeat until no improvement, num_lm acts as iterations limit
     if (policy == LandmarkPolicy::OptimizedFarthest) {
         for (uint32_t i = 0; i < num_lm; ++i) {
             uint32_t node = (i == 0) ? next_landmark_random(gen, g.num_nodes)
                                      : next_landmark_farthest(lm);
             lm.nodes[i] = node;
-            dijkstra(g,  node, metric, lm.dist_from.data() + i * g.num_nodes);
-            dijkstra(rg, node, metric, lm.dist_to  .data() + i * g.num_nodes);
+            dijkstra(g, node, metric, lm.dist_from.data() + i * g.num_nodes);
+            dijkstra(rg, node, metric, lm.dist_to.data() + i * g.num_nodes);
             lm.num_landmarks = i + 1;
         }
 
@@ -262,100 +250,108 @@ LandmarkTable build_landmarks(const Graph &g, const ReverseGraph &rg,
                 const uint32_t n = g.num_nodes;
                 std::vector<int32_t> saved_from(lm.dist_from.begin() + slot * n,
                                                 lm.dist_from.begin() + (slot + 1) * n);
-                std::vector<int32_t> saved_to  (lm.dist_to  .begin() + slot * n,
-                                                lm.dist_to  .begin() + (slot + 1) * n);
-                // temporarily set distances to INF to exclude current landmark from candidate evaluation
+                std::vector<int32_t> saved_to(lm.dist_to.begin() + slot * n,
+                                              lm.dist_to.begin() + (slot + 1) * n);
+
                 std::fill(lm.dist_from.begin() + slot * n,
                           lm.dist_from.begin() + (slot + 1) * n, INF);
-                std::fill(lm.dist_to  .begin() + slot * n,
-                          lm.dist_to  .begin() + (slot + 1) * n, INF);
+                std::fill(lm.dist_to.begin() + slot * n,
+                          lm.dist_to.begin() + (slot + 1) * n, INF);
 
-                int32_t  prev_score = farthest_score(lm);
-                uint32_t candidate    = next_landmark_farthest(lm);
-                dijkstra(g,  candidate, metric, lm.dist_from.data() + slot * n);
-                dijkstra(rg, candidate, metric, lm.dist_to  .data() + slot * n);
+                int32_t prev_score = farthest_score(lm);
+                uint32_t candidate = next_landmark_farthest(lm);
+
+                int32_t *from_ptr = lm.dist_from.data() + slot * n;
+                int32_t *to_ptr = lm.dist_to.data() + slot * n;
+                auto fwd = std::async(std::launch::async,
+                    [&g, candidate, metric, from_ptr] { dijkstra(g, candidate, metric, from_ptr); });
+                dijkstra(rg, candidate, metric, to_ptr);
+                fwd.wait();
 
                 if (farthest_score(lm) > prev_score) {
                     lm.nodes[slot] = candidate;
                     any_improved = true;
                 } else {
-                    // revert to saved distances if no improvement
                     std::copy(saved_from.begin(), saved_from.end(),
                               lm.dist_from.begin() + slot * n);
-                    std::copy(saved_to  .begin(), saved_to  .end(),
-                              lm.dist_to  .begin() + slot * n);
+                    std::copy(saved_to.begin(), saved_to.end(),
+                              lm.dist_to.begin() + slot * n);
                 }
             }
         }
         return lm;
     }
 
-    else if (policy == LandmarkPolicy::MaxCover)      
-        {
-       const uint32_t max_lm = 4 * num_lm;
+    if (policy == LandmarkPolicy::MaxCover) {
+        const uint32_t max_lm = 4 * num_lm;
         const uint32_t max_avoid = 5 * num_lm;
 
         LandmarkTable landmarks;
         landmarks.num_nodes = g.num_nodes;
-        landmarks.nodes    .resize(max_lm);
+        landmarks.nodes.resize(max_lm);
         landmarks.dist_from.resize(max_lm * g.num_nodes);
-        landmarks.dist_to  .resize(max_lm * g.num_nodes);
+        landmarks.dist_to.resize(max_lm * g.num_nodes);
 
         auto node = next_landmark_random(gen, g.num_nodes);
         landmarks.nodes[0] = node;
-        dijkstra(g,  node, metric, landmarks.dist_from.data());
-        dijkstra(rg, node, metric, landmarks.dist_to  .data());
+        dijkstra(g, node, metric, landmarks.dist_from.data());
+        dijkstra(rg, node, metric, landmarks.dist_to.data());
         landmarks.num_landmarks = 1;
-    
-      std::bernoulli_distribution cointoss(0.5);
-      uint32_t avoid_calls = 1;
-      while (landmarks.num_landmarks < max_lm && avoid_calls < max_avoid) {
-          // remove each landmark with probability 1/2
-          uint32_t kept = 0;
-          for (uint32_t l = 0; l < landmarks.num_landmarks; ++l) {
-              if (cointoss(gen)) {
-                  if (kept != l) {
-                      landmarks.nodes[kept] = landmarks.nodes[l];
-                      std::copy_n(landmarks.dist_from.data() + l * g.num_nodes, g.num_nodes,
-                                  landmarks.dist_from.data() + kept * g.num_nodes);
-                      std::copy_n(landmarks.dist_to.data() + l * g.num_nodes, g.num_nodes,
-                                  landmarks.dist_to.data() + kept * g.num_nodes);
-                  }
-                  ++kept;
-              }
-          }
-          landmarks.num_landmarks = kept;
 
-          // regenerate until back to num_lm, adding all new ones to the pool
-          while (landmarks.num_landmarks < num_lm && avoid_calls < max_avoid) {
-              uint32_t candidate = next_landmark_avoid(g, landmarks, metric, gen, buf, parents);
-              ++avoid_calls;
-              bool dup = false;
-              for (uint32_t l = 0; l < landmarks.num_landmarks; ++l)
-                  if (landmarks.nodes[l] == candidate) { dup = true; break; }
-              if (!dup) {
-                  landmarks.nodes[landmarks.num_landmarks] = candidate;
-                  dijkstra(g,  candidate, metric, landmarks.dist_from.data() + landmarks.num_landmarks * g.num_nodes);
-                  dijkstra(rg, candidate, metric, landmarks.dist_to  .data() + landmarks.num_landmarks * g.num_nodes);
-                  landmarks.num_landmarks++;
-              }
-          }
-      }
+        std::bernoulli_distribution cointoss(0.5);
+        uint32_t avoid_calls = 1;
+        while (landmarks.num_landmarks < max_lm && avoid_calls < max_avoid) {
+            uint32_t kept = 0;
+            for (uint32_t l = 0; l < landmarks.num_landmarks; ++l) {
+                if (cointoss(gen)) {
+                    if (kept != l) {
+                        landmarks.nodes[kept] = landmarks.nodes[l];
+                        std::copy_n(landmarks.dist_from.data() + l * g.num_nodes, g.num_nodes,
+                                    landmarks.dist_from.data() + kept * g.num_nodes);
+                        std::copy_n(landmarks.dist_to.data() + l * g.num_nodes, g.num_nodes,
+                                    landmarks.dist_to.data() + kept * g.num_nodes);
+                    }
+                    ++kept;
+                }
+            }
+            landmarks.num_landmarks = kept;
+
+            while (landmarks.num_landmarks < num_lm && avoid_calls < max_avoid) {
+                uint32_t candidate = next_landmark_avoid(g, landmarks, metric, gen, buf, parents);
+                ++avoid_calls;
+                bool dup = false;
+                for (uint32_t l = 0; l < landmarks.num_landmarks; ++l)
+                    if (landmarks.nodes[l] == candidate) { dup = true; break; }
+                if (!dup) {
+                    uint32_t slot = landmarks.num_landmarks;
+                    int32_t *from_ptr = landmarks.dist_from.data() + slot * g.num_nodes;
+                    int32_t *to_ptr = landmarks.dist_to.data() + slot * g.num_nodes;
+                    auto fwd = std::async(std::launch::async,
+                        [&g, candidate, metric, from_ptr] { dijkstra(g, candidate, metric, from_ptr); });
+                    dijkstra(rg, candidate, metric, to_ptr);
+                    fwd.wait();
+                    landmarks.nodes[slot] = candidate;
+                    landmarks.num_landmarks++;
+                }
+            }
+        }
 
         const uint32_t num_candidates = landmarks.num_landmarks;
-
-        // multi-start local search on pool subsets of size num_lm
-        // "Return the best solution found after ⌊log2 k + 1⌋ iterations
         const uint32_t iterations = static_cast<uint32_t>(std::log2(num_lm)) + 1;
-        std::vector<uint32_t> slots_best, slots_curr(num_lm);
+
+        std::vector<uint32_t> slots_best;
         uint32_t best_cost = std::numeric_limits<uint32_t>::max();
+        std::mutex best_mu;
 
-        std::vector<uint32_t> indices(num_candidates);
-        std::iota(indices.begin(), indices.end(), 0);
-
+        #pragma omp parallel for schedule(dynamic)
         for (uint32_t iter = 0; iter < iterations; ++iter) {
-            std::shuffle(indices.begin(), indices.end(), gen);
-            std::copy_n(indices.begin(), num_lm, slots_curr.begin());
+            std::mt19937 local_gen(seed + iter);
+            std::vector<uint32_t> local_indices(num_candidates);
+            std::iota(local_indices.begin(), local_indices.end(), 0);
+            std::shuffle(local_indices.begin(), local_indices.end(), local_gen);
+
+            std::vector<uint32_t> slots_curr(num_lm);
+            std::copy_n(local_indices.begin(), num_lm, slots_curr.begin());
 
             bool improved = true;
             while (improved) {
@@ -365,17 +361,17 @@ LandmarkTable build_landmarks(const Graph &g, const ReverseGraph &rg,
                 std::vector<bool> in_S(num_candidates, false);
                 for (uint32_t s : slots_curr) in_S[s] = true;
 
-                // find all improving single swaps between S and landmarks \ S
                 struct Swap { uint32_t si, pi, profit; };
                 std::vector<Swap> improving;
+
                 for (uint32_t pi = 0; pi < num_candidates; ++pi) {
                     if (in_S[pi]) continue;
                     for (uint32_t si = 0; si < num_lm; ++si) {
-                        std::vector<uint32_t> trial = slots_curr;
-                        trial[si] = pi;
-                        uint32_t trial_cost = uncovered_arcs(g, landmarks, trial, metric);
-                        if (trial_cost < cur_cost)
-                            improving.push_back({si, pi, cur_cost - trial_cost});
+                        std::vector<uint32_t> test = slots_curr;
+                        test[si] = pi;
+                        uint32_t test_cost = uncovered_arcs(g, landmarks, test, metric);
+                        if (test_cost < cur_cost)
+                            improving.push_back({si, pi, cur_cost - test_cost});
                     }
                 }
 
@@ -383,48 +379,50 @@ LandmarkTable build_landmarks(const Graph &g, const ReverseGraph &rg,
                     std::vector<uint32_t> weights;
                     for (auto &sw : improving) weights.push_back(sw.profit);
                     std::discrete_distribution<uint32_t> wdist(weights.begin(), weights.end());
-                    auto &chosen = improving[wdist(gen)];
+                    auto &chosen = improving[wdist(local_gen)];
                     slots_curr[chosen.si] = chosen.pi;
                     improved = true;
                 }
             }
 
-            uint32_t output_cost = uncovered_arcs(g, landmarks, slots_curr, metric);
-            if (output_cost < best_cost) { 
-              best_cost = output_cost;
-              slots_best = slots_curr; 
-              }
+            uint32_t local_cost = uncovered_arcs(g, landmarks, slots_curr, metric);
+            {
+                std::lock_guard<std::mutex> lk(best_mu);
+                if (local_cost < best_cost) {
+                    best_cost = local_cost;
+                    slots_best = slots_curr;
+                }
+            }
         }
 
-        // copy winning landmarks rows into the output table
         for (uint32_t i = 0; i < num_lm; ++i) {
-            uint32_t src  = slots_best[i];
-            lm.nodes[i]   = landmarks.nodes[src];
+            uint32_t src = slots_best[i];
+            lm.nodes[i] = landmarks.nodes[src];
             std::copy_n(landmarks.dist_from.data() + src * g.num_nodes, g.num_nodes,
-                        lm.dist_from.data()   + i   * g.num_nodes);
-            std::copy_n(landmarks.dist_to  .data() + src * g.num_nodes, g.num_nodes,
-                        lm.dist_to  .data()   + i   * g.num_nodes);
+                        lm.dist_from.data() + i * g.num_nodes);
+            std::copy_n(landmarks.dist_to.data() + src * g.num_nodes, g.num_nodes,
+                        lm.dist_to.data() + i * g.num_nodes);
         }
         lm.num_landmarks = num_lm;
         return lm;
     }
-    __builtin_unreachable();   
+    __builtin_unreachable();
 }
 
 void save_landmarks(const LandmarkTable &t, const std::string &path) {
     std::ofstream out(path, std::ios::binary);
-    out.write(reinterpret_cast<const char *>(&t.num_landmarks),sizeof(t.num_landmarks));
-    out.write(reinterpret_cast<const char *>(&t.num_nodes),sizeof(t.num_nodes));
-    out.write(reinterpret_cast<const char *>(t.nodes.data()), t.nodes    .size() * sizeof(uint32_t));
+    out.write(reinterpret_cast<const char *>(&t.num_landmarks), sizeof(t.num_landmarks));
+    out.write(reinterpret_cast<const char *>(&t.num_nodes), sizeof(t.num_nodes));
+    out.write(reinterpret_cast<const char *>(t.nodes.data()), t.nodes.size() * sizeof(uint32_t));
     out.write(reinterpret_cast<const char *>(t.dist_from.data()), t.dist_from.size() * sizeof(int32_t));
-    out.write(reinterpret_cast<const char *>(t.dist_to.data()), t.dist_to  .size() * sizeof(int32_t));
+    out.write(reinterpret_cast<const char *>(t.dist_to.data()), t.dist_to.size() * sizeof(int32_t));
 }
 
 LandmarkTable load_landmarks(const std::string &path) {
     std::ifstream in(path, std::ios::binary);
     LandmarkTable t;
     in.read(reinterpret_cast<char *>(&t.num_landmarks), sizeof(t.num_landmarks));
-    in.read(reinterpret_cast<char *>(&t.num_nodes),     sizeof(t.num_nodes));
+    in.read(reinterpret_cast<char *>(&t.num_nodes), sizeof(t.num_nodes));
     t.nodes.resize(t.num_landmarks);
     t.dist_from.resize(t.num_landmarks * t.num_nodes);
     t.dist_to.resize(t.num_landmarks * t.num_nodes);
