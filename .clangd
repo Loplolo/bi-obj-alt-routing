@@ -1,0 +1,4 @@
+CompileFlags:
+  CompilationDatabase: ./build
+  Add:
+    - "-I/nix/store/3yl2s5r3yph88imzbgbdrh8pbs9rcjcs-zlib-1.3.2-dev/include"

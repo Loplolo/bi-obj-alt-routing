@@ -1,0 +1,7 @@
+build/
+data/*
+compile_commands.json 
+.direnv/
+.cache/
+.clangd/
+**/*~
