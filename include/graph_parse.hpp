@@ -28,13 +28,7 @@ struct Graph {
   size_t num_edges = 0;
 };
 
-inline int32_t eulerian_distance(const Graph &graph, uint32_t u, uint32_t v){ 
-    const auto &coord_u = graph.coords[u - 1];
-    const auto &coord_v = graph.coords[v - 1];
-    int64_t dx = static_cast<int64_t>(coord_u.x) - coord_v.x;
-    int64_t dy = static_cast<int64_t>(coord_u.y) - coord_v.y;
-    return static_cast<int32_t>(std::sqrt(dx * dx + dy * dy));
-};
+int32_t euclidean_dist(const Graph &graph, uint32_t u, uint32_t v);
 
 Graph parse_gz(const std::string &dist_file, const std::string &time_file,
                const std::string &coord_file);

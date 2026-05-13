@@ -1,6 +1,15 @@
 #include "graph_parse.hpp"
 #include <zlib.h>
 #include <sstream>
+#include <cmath>
+
+int32_t euclidean_dist(const Graph &graph, uint32_t u, uint32_t v) {
+    const auto &cu = graph.coords[u];
+    const auto &cv = graph.coords[v];
+    const double dx = static_cast<double>(cu.x) - cv.x;
+    const double dy = static_cast<double>(cu.y) - cv.y;
+    return static_cast<int32_t>(std::sqrt(dx * dx + dy * dy));
+}
 
 Graph parse_gz(const std::string &dist_file,
                const std::string &time_file,
