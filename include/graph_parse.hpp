@@ -35,11 +35,13 @@ Graph parse_gz(const std::string &dist_file, const std::string &time_file,
 
 struct ReverseGraph : Graph {
   std::vector<uint32_t> offset;
-  std::vector<uint32_t> source;
+  std::vector<uint32_t> target;  // source node in forward graph = target in reverse
   std::vector<int32_t> distance;
   std::vector<int32_t> travel_time;
 
   explicit ReverseGraph(const Graph &g) {
+    num_nodes = g.num_nodes;
+    num_edges = g.num_edges;
     const size_t N = g.num_nodes;
     offset.assign(N + 1, 0);
 
@@ -50,7 +52,7 @@ struct ReverseGraph : Graph {
     for (size_t i = 1; i <= N; ++i)
       offset[i] += offset[i - 1];
 
-    source.resize(g.num_edges);
+    target.resize(g.num_edges);
     distance.resize(g.num_edges);
     travel_time.resize(g.num_edges);
     std::vector<uint32_t> pos = offset;
@@ -59,7 +61,7 @@ struct ReverseGraph : Graph {
       for (uint32_t e = g.offset[u]; e < g.offset[u + 1]; ++e) {
         uint32_t v = g.target[e];
         uint32_t idx = pos[v]++;
-        source[idx] = u;
+        target[idx] = u;
         distance[idx] = g.distance[e];
         travel_time[idx] = g.travel_time[e];
       }

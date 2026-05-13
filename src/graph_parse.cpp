@@ -95,9 +95,9 @@ Graph parse_gz(const std::string &dist_file,
         if (u < 1 || u > graph.num_nodes) continue;
         uint32_t idx = current_pos[u - 1]++;
         if (idx >= graph.target.size()) continue;
-        edge_target(graph, idx)   = dist_edges[i].v - 1;
-        edge_dist(graph, idx)     = dist_edges[i].w;
-        edge_time(graph, idx)     = time_edges[i].w;
+        graph.target[idx] = dist_edges[i].v - 1;
+        graph.distance[idx] = dist_edges[i].w;
+        graph.travel_time[idx] = time_edges[i].w;
     }
     return graph;
 }
