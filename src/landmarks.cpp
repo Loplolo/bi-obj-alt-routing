@@ -20,6 +20,16 @@ inline int get_bucket(int32_t val, int32_t last) {
     return 32 - __builtin_clz(diff);
 }
 
+inline int32_t lower_bound(const LandmarkTable &lm, uint32_t u, uint32_t v) {
+    int32_t lb = 0;
+    for (uint32_t l = 0; l < lm.num_landmarks; ++l) {
+        int32_t d1 = lm.from(l, u) - lm.from(l, v);
+        int32_t d2 = lm.to(l, v) - lm.to(l, u);
+        lb = std::max(lb, std::max(d1, d2));
+    }
+    return lb;
+}
+
 template <typename GraphType>
 void dijkstra(const GraphType &g, uint32_t source, int metric,
               int32_t *dists, uint32_t *parents = nullptr) {
