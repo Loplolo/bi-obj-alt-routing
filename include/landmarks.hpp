@@ -31,8 +31,6 @@ template <typename GraphType>
 void dijkstra(const GraphType &g, uint32_t source, int metric,
               int32_t *dists, uint32_t *parents = nullptr);
 
-template <typename GraphType>
-
 LandmarkTable build_landmarks(const Graph &g, const ReverseGraph &rg,
                               uint32_t num_lm, int metric,
                               LandmarkPolicy policy,

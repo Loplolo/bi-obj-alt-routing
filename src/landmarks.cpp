@@ -1,4 +1,3 @@
-#pragma once
 #include "graph_parse.hpp"
 #include "landmarks.hpp"
 #include <algorithm>
@@ -20,11 +19,11 @@ inline int get_bucket(int32_t val, int32_t last) {
     return 32 - __builtin_clz(diff);
 }
 
-inline int32_t lower_bound(const LandmarkTable &lm, uint32_t u, uint32_t v) {
+int32_t LandmarkTable::lower_bound(uint32_t u, uint32_t v) const {
     int32_t lb = 0;
-    for (uint32_t l = 0; l < lm.num_landmarks; ++l) {
-        int32_t d1 = lm.from(l, u) - lm.from(l, v);
-        int32_t d2 = lm.to(l, v) - lm.to(l, u);
+    for (uint32_t l = 0; l < num_landmarks; ++l) {
+        int32_t d1 = from(l, u) - from(l, v);
+        int32_t d2 = to(l, v) - to(l, u);
         lb = std::max(lb, std::max(d1, d2));
     }
     return lb;
@@ -32,7 +31,7 @@ inline int32_t lower_bound(const LandmarkTable &lm, uint32_t u, uint32_t v) {
 
 template <typename GraphType>
 void dijkstra(const GraphType &g, uint32_t source, int metric,
-              int32_t *dists, uint32_t *parents = nullptr) {
+              int32_t *dists, uint32_t *parents) {
     std::fill_n(dists, g.num_nodes, INF);
     if (parents) std::fill_n(parents, g.num_nodes, UINT32_MAX);
     dists[source] = 0;
@@ -55,6 +54,7 @@ void dijkstra(const GraphType &g, uint32_t source, int metric,
             for (const auto &p : buckets[i]) {
                 int new_idx = get_bucket(p.first, prev);
                 buckets[new_idx].push_back(p);
+                bucket_min[new_idx] = std::min(bucket_min[new_idx], p.first);
             }
             buckets[i].clear();
             bucket_min[i] = INF;
@@ -206,7 +206,7 @@ uint32_t uncovered_arcs(const Graph &g, const LandmarkTable &landmarks,
 LandmarkTable build_landmarks(const Graph &g, const ReverseGraph &rg,
                               uint32_t num_lm, int metric,
                               LandmarkPolicy policy,
-                              uint32_t seed = 0) {
+                              uint32_t seed) {
     LandmarkTable lm;
     lm.num_nodes = g.num_nodes;
     lm.nodes.resize(num_lm);
