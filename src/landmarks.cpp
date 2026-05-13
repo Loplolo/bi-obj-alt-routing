@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include <future>
+#include <zlib.h>
 
 inline int get_bucket(int32_t val, int32_t last) {
     if (val == last) return 0;
@@ -419,25 +420,47 @@ LandmarkTable build_landmarks(const Graph &g, const ReverseGraph &rg,
     __builtin_unreachable();
 }
 
+static void gz_write_all(gzFile f, const void *buf, size_t len) {
+    const char *p = static_cast<const char *>(buf);
+    while (len > 0) {
+        unsigned chunk = static_cast<unsigned>(std::min(len, size_t(1u << 30)));
+        gzwrite(f, p, chunk);
+        p += chunk;
+        len -= chunk;
+    }
+}
+
+static void gz_read_all(gzFile f, void *buf, size_t len) {
+    char *p = static_cast<char *>(buf);
+    while (len > 0) {
+        unsigned chunk = static_cast<unsigned>(std::min(len, size_t(1u << 30)));
+        gzread(f, p, chunk);
+        p += chunk;
+        len -= chunk;
+    }
+}
+
 void save_landmarks(const LandmarkTable &t, const std::string &path) {
-    std::ofstream out(path, std::ios::binary);
-    out.write(reinterpret_cast<const char *>(&t.num_landmarks), sizeof(t.num_landmarks));
-    out.write(reinterpret_cast<const char *>(&t.num_nodes), sizeof(t.num_nodes));
-    out.write(reinterpret_cast<const char *>(t.nodes.data()), t.nodes.size() * sizeof(uint32_t));
-    out.write(reinterpret_cast<const char *>(t.dist_from.data()), t.dist_from.size() * sizeof(int32_t));
-    out.write(reinterpret_cast<const char *>(t.dist_to.data()), t.dist_to.size() * sizeof(int32_t));
+    gzFile out = gzopen(path.c_str(), "wb1");
+    gz_write_all(out, &t.num_landmarks, sizeof(t.num_landmarks));
+    gz_write_all(out, &t.num_nodes, sizeof(t.num_nodes));
+    gz_write_all(out, t.nodes.data(), t.nodes.size() * sizeof(uint32_t));
+    gz_write_all(out, t.dist_from.data(), t.dist_from.size() * sizeof(int32_t));
+    gz_write_all(out, t.dist_to.data(), t.dist_to.size() * sizeof(int32_t));
+    gzclose(out);
 }
 
 LandmarkTable load_landmarks(const std::string &path) {
-    std::ifstream in(path, std::ios::binary);
+    gzFile in = gzopen(path.c_str(), "rb");
     LandmarkTable t;
-    in.read(reinterpret_cast<char *>(&t.num_landmarks), sizeof(t.num_landmarks));
-    in.read(reinterpret_cast<char *>(&t.num_nodes), sizeof(t.num_nodes));
+    gz_read_all(in, &t.num_landmarks, sizeof(t.num_landmarks));
+    gz_read_all(in, &t.num_nodes, sizeof(t.num_nodes));
     t.nodes.resize(t.num_landmarks);
     t.dist_from.resize(t.num_landmarks * t.num_nodes);
     t.dist_to.resize(t.num_landmarks * t.num_nodes);
-    in.read(reinterpret_cast<char *>(t.nodes.data()), t.nodes.size() * sizeof(uint32_t));
-    in.read(reinterpret_cast<char *>(t.dist_from.data()), t.dist_from.size() * sizeof(int32_t));
-    in.read(reinterpret_cast<char *>(t.dist_to.data()), t.dist_to.size() * sizeof(int32_t));
+    gz_read_all(in, t.nodes.data(), t.nodes.size() * sizeof(uint32_t));
+    gz_read_all(in, t.dist_from.data(), t.dist_from.size() * sizeof(int32_t));
+    gz_read_all(in, t.dist_to.data(), t.dist_to.size() * sizeof(int32_t));
+    gzclose(in);
     return t;
 }
