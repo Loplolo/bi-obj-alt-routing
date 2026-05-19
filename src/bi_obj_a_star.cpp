@@ -1,4 +1,8 @@
 #include "bi_obj_a_star.hpp"
+#include "graph_parse.hpp"
+#include "landmarks.hpp"
+#include <algorithm>
+#include <future>
 #include <limits>
 #include <queue>
 
@@ -7,109 +11,133 @@ bool Node::operator>(const Node& other) const {
     return f2 > other.f2;
 }
 
-BOBALT::BOBALT(const Graph &g, const std::vector<LandmarkTable> &lm)
-    : graph(g), landmarks(lm) {}
+BOBALT::BOBALT(const Graph &g, const ReverseGraph &rg, const std::vector<LandmarkTable> &lm) : graph(g), rev_graph(rg), landmarks(lm) {}
 
-int32_t BOBALT::h1(uint32_t u, uint32_t target) const {
-    if (landmarks.empty()) return 0;
-    return landmarks[0].lower_bound(u, target);
+uint32_t BOBALT::alt_h(int metric, uint32_t u, uint32_t v) const {
+    return landmarks[metric - 1].lower_bound(u, v);
 }
 
-int32_t BOBALT::h2(uint32_t u, uint32_t target) const {
-    if (landmarks.size() < 2) return 0;
-    return landmarks[1].lower_bound(u, target);
-}
 
-int32_t BOBALT::ub1(uint32_t u, uint32_t target) const {
-    if (landmarks.empty()) return std::numeric_limits<int32_t>::max();
-    const auto &lm = landmarks[0];
-    int32_t best = std::numeric_limits<int32_t>::max();
-    for (uint32_t l = 0; l < lm.num_landmarks; ++l) {
-        int32_t a = lm.to(l, u), b = lm.from(l, target);
-        if (a < std::numeric_limits<int32_t>::max() / 2 &&
-            b < std::numeric_limits<int32_t>::max() / 2)
-            best = std::min(best, a + b);
-    }
-    return best;
-}
-
-int32_t BOBALT::ub2(uint32_t u, uint32_t target) const {
-    if (landmarks.size() < 2) return std::numeric_limits<int32_t>::max();
-    const auto &lm = landmarks[1];
-    int32_t best = std::numeric_limits<int32_t>::max();
-    for (uint32_t l = 0; l < lm.num_landmarks; ++l) {
-        int32_t a = lm.to(l, u), b = lm.from(l, target);
-        if (a < std::numeric_limits<int32_t>::max() / 2 &&
-            b < std::numeric_limits<int32_t>::max() / 2)
-            best = std::min(best, a + b);
-    }
-    return best;
-}
-
-std::vector<Node> BOBALT::query(uint32_t source, uint32_t target) {
-    const int32_t INF = std::numeric_limits<int32_t>::max();
+template<typename G, typename H1, typename H2>
+static Result boa(const G &g, uint32_t source, uint32_t target, bool inverted,
+                  H1 h1, H2 h2)
+{
+    const uint32_t INF = std::numeric_limits<uint32_t>::max();
+    const size_t N = g.num_nodes;
 
     std::priority_queue<Node, std::vector<Node>, std::greater<Node>> open;
-    std::vector<Node> sol;
+    std::vector<uint32_t> g1_min(N, INF);
+    std::vector<uint32_t> g2_min(N, INF);
 
-    std::vector<int32_t> g1_min(graph.num_nodes, INF);
-    std::vector<int32_t> g2_min(graph.num_nodes, INF);
-    std::vector<int32_t> h_prime_1(graph.num_nodes, -1);
+    Result result;
+    result.lower_bound.assign(N, -1);
 
-    Node start_node;
-    start_node.state = source;
-    start_node.g1 = 0;
-    start_node.g2 = 0;
-    start_node.f1 = h1(source, target);
-    start_node.f2 = h2(source, target);
-    start_node.parent = -1;
-
-    open.push(start_node);
+    Node start;
+    start.state = source;
+    start.g1 = 0;
+    start.g2 = 0;
+    start.f1 = h1(source);
+    start.f2 = h2(source);
+    open.push(start);
 
     while (!open.empty()) {
-
         Node x = open.top();
         open.pop();
-        uint32_t s_x = x.state;
+        uint32_t u = x.state;
 
-        if (x.f1 >= g1_min[source]) break;
-        if (x.g2 >= g2_min[s_x] || x.f2 >= g2_min[target]) continue;
-        if (g2_min[s_x] == INF) {
-            h_prime_1[s_x] = x.g1;
-        }
+        if (x.f1 >= g1_min[source])
+            break;
 
-        g2_min[s_x] = x.g2;
+        if (x.g2 >= g2_min[u] || x.f2 >= g2_min[target]) continue;
 
-        if (s_x == target) {
-            if (!sol.empty() && sol.back().f1 == x.f1) {
-                sol.pop_back();
-            }
-            sol.push_back(x);
+        if (result.lower_bound[u] == (uint32_t)-1)
+            result.lower_bound[u] = x.g1;
+
+        g2_min[u] = x.g2;
+
+        if (u == target) {
+            if (!result.solutions.empty() && result.solutions.back().f1 == x.f1)
+                result.solutions.pop_back();
+            result.solutions.push_back(x);
+            g1_min[source] = x.f1;
             continue;
         }
 
-        if (x.g2 + ub2(s_x, target) < g2_min[target]) {
-            g2_min[target] = x.g2 + ub2(s_x, target);
-            if (!sol.empty() && sol.back().f1 == x.f1) {
-                sol.pop_back();
-            }
-            sol.push_back(x);
-            if (h1(s_x, target) == ub1(s_x, target)) continue;
-        }
-
-        for (uint32_t e = graph.offset[s_x]; e < graph.offset[s_x + 1]; ++e) {
-            uint32_t t = graph.target[e];
+        for (uint32_t e = g.offset[u]; e < g.offset[u + 1]; ++e) {
+            uint32_t v = g.target[e];
+            uint32_t w1 = inverted ? g.distance[e] : g.travel_time[e];
+            uint32_t w2 = inverted ? g.travel_time[e] : g.distance[e];
             Node y;
-            y.state = t;
-            y.g1 = x.g1 + graph.distance[e];
-            y.g2 = x.g2 + graph.travel_time[e];
-            y.f1 = y.g1 + h1(t, target);
-            y.f2 = y.g2 + h2(t, target);
-            y.parent = x.state;
-            if (y.g2 >= g2_min[t] || y.f2 >= g2_min[target]) continue;
+            y.state = v;
+            y.g1 = x.g1 + w1;
+            y.g2 = x.g2 + w2;
+            y.f1 = y.g1 + h1(v);
+            y.f2 = y.g2 + h2(v);
+            if (y.g2 >= g2_min[v] || y.f2 >= g2_min[target]) continue;
             if (y.f1 >= g1_min[source]) continue;
             open.push(y);
         }
     }
-    return sol;
+    return result;
+}
+
+std::vector<Node> BOBALT::query(uint32_t source, uint32_t target) {
+    auto h  = [&](int m, uint32_t u, uint32_t v) { return alt_h(m, u, v); };
+    auto lb = [](const Result &r, uint32_t u) -> uint32_t {
+        uint32_t v = r.lower_bound[u];
+        return (v != (uint32_t)-1) ? v : 0;
+    };
+
+    auto f1 = std::async(std::launch::async, [&]{ return boa(graph, source, target, true,
+        [&](uint32_t u){ return h(1, u, target); },
+        [&](uint32_t u){ return h(2, u, target); }); });
+
+    auto f2 = std::async(std::launch::async, [&]{ return boa(rev_graph, target, source, false,
+        [&](uint32_t u){ return h(2, source, u); },
+        [&](uint32_t u){ return h(1, source, u); }); });
+
+    auto f3 = std::async(std::launch::async, [&]{ return boa(graph, source, target, false,
+        [&](uint32_t u){ return h(2, u, target); },
+        [&](uint32_t u){ return h(1, u, target); }); });
+
+    auto f4 = std::async(std::launch::async, [&]{ return boa(rev_graph, target, source, true,
+        [&](uint32_t u){ return h(1, source, u); },
+        [&](uint32_t u){ return h(2, source, u); }); });
+
+    auto r1 = f1.get();
+    auto r2 = f2.get();
+    auto r3 = f3.get();
+    auto r4 = f4.get();
+
+    auto f5 = std::async(std::launch::async, [&]{ return boa(graph, source, target, true,
+        [&](uint32_t u){ return std::max<uint32_t>(lb(r4, u), h(1, u, target)); },
+        [&](uint32_t u){ return std::max<uint32_t>(lb(r2, u), h(2, u, target)); }); });
+
+    auto f6 = std::async(std::launch::async, [&]{ return boa(rev_graph, target, source, false,
+        [&](uint32_t u){ return std::max<uint32_t>(lb(r3, u), h(2, source, u)); },
+        [&](uint32_t u){ return std::max<uint32_t>(lb(r1, u), h(1, source, u)); }); });
+
+    auto r5 = f5.get();
+    auto r6 = f6.get();
+
+    for (auto &n : r6.solutions) std::swap(n.g1, n.g2);
+
+    std::vector<Node> solutions;
+    solutions.reserve(r5.solutions.size() + r6.solutions.size());
+    solutions.insert(solutions.end(), r5.solutions.begin(), r5.solutions.end());
+    solutions.insert(solutions.end(), r6.solutions.begin(), r6.solutions.end());
+
+    std::sort(solutions.begin(), solutions.end(), [](const Node &a, const Node &b) {
+        return a.g1 < b.g1 || (a.g1 == b.g1 && a.g2 < b.g2);
+    });
+
+    std::vector<Node> result;
+    uint32_t min_g2 = std::numeric_limits<uint32_t>::max();
+    for (auto &n : solutions) {
+        if (n.g2 < min_g2) {
+            result.push_back(n);
+            min_g2 = n.g2;
+        }
+    }
+    return result;
 }

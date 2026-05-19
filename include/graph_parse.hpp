@@ -3,7 +3,6 @@
 #include <string>
 #include <vector>
 
-// Helper functions for CSR graph
 template <typename GraphType>
 inline uint32_t edge_begin(const GraphType &g, uint32_t u) { return g.offset[u]; }
 template <typename GraphType>
@@ -11,33 +10,33 @@ inline uint32_t edge_end(const GraphType &g, uint32_t u) { return g.offset[u + 1
 template <typename GraphType>
 inline uint32_t edge_target(const GraphType &g, uint32_t e) { return g.target[e]; }
 template <typename GraphType>
-inline int32_t edge_weight(const GraphType &g, uint32_t e, int metric) {
+inline uint32_t edge_weight(const GraphType &g, uint32_t e, int metric) {
     return (metric == 1) ? g.distance[e] : g.travel_time[e];
 }
 
 struct Graph {
   struct Coordinate {
-    int32_t x, y;
+    uint32_t x, y;
   };
   std::vector<uint32_t> offset;
   std::vector<uint32_t> target;
-  std::vector<int32_t> distance;
-  std::vector<int32_t> travel_time;
+  std::vector<uint32_t> distance;
+  std::vector<uint32_t> travel_time;
   std::vector<Coordinate> coords;
   size_t num_nodes = 0;
   size_t num_edges = 0;
 };
 
-int32_t euclidean_dist(const Graph &graph, uint32_t u, uint32_t v);
+uint32_t euclidean_dist(const Graph &graph, uint32_t u, uint32_t v);
 
 Graph parse_gz(const std::string &dist_file, const std::string &time_file,
                const std::string &coord_file);
 
 struct ReverseGraph : Graph {
   std::vector<uint32_t> offset;
-  std::vector<uint32_t> target;  // source node in forward graph = target in reverse
-  std::vector<int32_t> distance;
-  std::vector<int32_t> travel_time;
+  std::vector<uint32_t> target;  
+  std::vector<uint32_t> distance;
+  std::vector<uint32_t> travel_time;
 
   explicit ReverseGraph(const Graph &g) {
     num_nodes = g.num_nodes;

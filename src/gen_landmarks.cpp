@@ -13,7 +13,7 @@ static void usage(const char *prog) {
         "Options:\n"
         "  --metric   1=distance  2=time  (default: 1)\n"
         "  --num-lm   number of landmarks (default: 16)\n"
-        "  --policy   random | farthest | optimized | avoid | maxcover  (default: farthest)\n"
+        "  --policy   random | farthest | optimized | avoid  (default: farthest)\n"
         "  --seed     RNG seed (default: 0)\n";
 }
 
@@ -22,7 +22,6 @@ static LandmarkPolicy parse_policy(const std::string &s) {
     if (s == "farthest")  return LandmarkPolicy::Farthest;
     if (s == "optimized") return LandmarkPolicy::OptimizedFarthest;
     if (s == "avoid")     return LandmarkPolicy::Avoid;
-    if (s == "maxcover")  return LandmarkPolicy::MaxCover;
     throw std::invalid_argument("Unknown policy: " + s);
 }
 
@@ -77,7 +76,6 @@ int main(int argc, char *argv[]) {
         case LandmarkPolicy::Farthest:          std::cout << "farthest";  break;
         case LandmarkPolicy::OptimizedFarthest: std::cout << "optimized"; break;
         case LandmarkPolicy::Avoid:             std::cout << "avoid";     break;
-        case LandmarkPolicy::MaxCover:          std::cout << "maxcover";  break;
     }
     std::cout << ", seed=" << seed << ")... " << std::flush;
 
